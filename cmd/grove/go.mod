@@ -9,7 +9,7 @@ require (
 	charm.land/bubbles/v2 v2.2.1
 	charm.land/bubbletea/v2 v2.0.9
 	charm.land/lipgloss/v2 v2.0.6
-	github.com/incantery/grove v0.0.0-20260911122650-723248d8917c
+	github.com/incantery/grove v0.1.1-0.20260911170256-3c684c7e4570
 )
 
 require (
