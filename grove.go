@@ -258,11 +258,11 @@ func (r Repo) Fetch() error {
 // it applies the conventions and returns the row. It does not open a
 // session; Open does.
 func (r Repo) New(name, from string, conv Conventions) (Worktree, error) {
-	if name == "" || strings.ContainsAny(name, " /\\:") || strings.Contains(name, "..") {
-		return Worktree{}, fmt.Errorf("worktree name %q: one word, no slashes", name)
+	if err := checkName(name); err != nil {
+		return Worktree{}, err
 	}
 	path := r.Path(name)
-	if _, err := os.Stat(path); err == nil {
+	if exists(path) {
 		return Worktree{}, fmt.Errorf("%s already exists", path)
 	}
 	args := []string{"worktree", "add"}
@@ -280,6 +280,25 @@ func (r Repo) New(name, from string, conv Conventions) (Worktree, error) {
 	if out, err := git(r.Root, args...); err != nil {
 		return Worktree{}, fmt.Errorf("git worktree add: %s", strings.TrimSpace(out))
 	}
+	r.apply(path, conv)
+	return r.Get(name)
+}
+
+func checkName(name string) error {
+	if name == "" || strings.ContainsAny(name, " /\\:") || strings.Contains(name, "..") {
+		return fmt.Errorf("worktree name %q: one word, no slashes", name)
+	}
+	return nil
+}
+
+func exists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// apply gives a fresh checkout what git did not carry: the
+// conventions' copies and links from the main checkout.
+func (r Repo) apply(path string, conv Conventions) {
 	for _, rel := range conv.Copy {
 		src, dst := filepath.Join(r.Root, rel), filepath.Join(path, rel)
 		if _, err := os.Lstat(src); err != nil {
@@ -300,7 +319,6 @@ func (r Repo) New(name, from string, conv Conventions) (Worktree, error) {
 			fmt.Fprintf(os.Stderr, "grove: link %s: %v\n", rel, err)
 		}
 	}
-	return r.Get(name)
 }
 
 func (r Repo) hasRef(ref string) bool {

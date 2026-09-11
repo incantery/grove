@@ -3,6 +3,8 @@
 //	grove                          the manager (a TUI); the rows, in a pipe
 //	grove new <name> [--from REF] [--fetch] [--no-open]
 //	grove open <name>              go there (the session is made if it must be)
+//	grove pr                       the open pull requests that concern you (gh)
+//	grove pr <number> [--no-open]  that PR's branch in a worktree, opened
 //	grove merge <name>             land the branch on the default branch; remove all three
 //	grove rm <name> [--force]      remove the worktree, its session, and its branch
 //	grove path <name>              the worktree's directory, for cd "$(grove path x)"
@@ -20,6 +22,7 @@ import (
 	"os"
 	"runtime/debug"
 	"strings"
+	"time"
 
 	"github.com/incantery/grove"
 )
@@ -122,6 +125,8 @@ func run(args []string) error {
 			return err
 		}
 		return repo.Open(wt)
+	case "pr", "prs", "pull", "pulls":
+		return pr(repo, rest)
 	case "merge":
 		if len(rest) != 1 {
 			return fmt.Errorf("usage: grove merge <name>")
@@ -182,6 +187,89 @@ func manageAndAttach(repo grove.Repo) error {
 	return nil
 }
 
+// pr lists the open pull requests that concern the person, or puts
+// one of them in a worktree and opens it.
+func pr(repo grove.Repo, rest []string) error {
+	open, asJSON, which := true, false, ""
+	for _, a := range rest {
+		switch {
+		case a == "--no-open":
+			open = false
+		case a == "--json":
+			asJSON = true
+		case strings.HasPrefix(a, "-"):
+			return fmt.Errorf("pr: unknown flag %s", a)
+		default:
+			which = a
+		}
+	}
+	pulls, err := repo.PullRequests()
+	if err != nil {
+		return err
+	}
+	wts, err := repo.List()
+	if err != nil {
+		return err
+	}
+	pulls, _ = grove.Link(pulls, wts)
+	if which == "" {
+		if asJSON {
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			return enc.Encode(pulls)
+		}
+		if len(pulls) == 0 {
+			fmt.Println("no open pull requests concern you here")
+			return nil
+		}
+		now := time.Now()
+		for _, p := range pulls {
+			where := ""
+			if p.Worktree != "" {
+				where = "  in " + p.Worktree
+			}
+			fmt.Printf("#%-6d %-32s %-13s %-4s %s%s\n", p.Number, p.Branch, p.Said(), p.Age(now), p.Title, where)
+		}
+		return nil
+	}
+	p, ok := pick(pulls, which)
+	if !ok {
+		return fmt.Errorf("no open pull request %q concerns you here (grove pr lists them)", which)
+	}
+	conv := grove.UserConventions().Merge(grove.LoadConventions(repo.Root))
+	wt, err := repo.Checkout(p, conv)
+	if err != nil {
+		return err
+	}
+	if open {
+		if err := repo.Open(wt); err != nil {
+			return err
+		}
+		wt.Live = repo.Place.Live()[wt.Session]
+	}
+	if asJSON {
+		return json.NewEncoder(os.Stdout).Encode(wt)
+	}
+	fmt.Println(wt.Path)
+	if open && !grove.InsideSession() {
+		if a, ok := repo.Place.(grove.Attacher); ok {
+			return a.Attach(wt.Session)
+		}
+	}
+	return nil
+}
+
+// pick finds a pull request by number, `#number`, URL, or branch.
+func pick(pulls []grove.Pull, which string) (grove.Pull, bool) {
+	which = strings.TrimPrefix(which, "#")
+	for _, p := range pulls {
+		if fmt.Sprint(p.Number) == which || p.URL == which || p.Branch == which {
+			return p, true
+		}
+	}
+	return grove.Pull{}, false
+}
+
 func list(repo grove.Repo, asJSON bool) error {
 	wts, err := repo.List()
 	if err != nil {
@@ -240,6 +328,12 @@ usage:
                                  (--fetch asks origin first), else a fresh one
                                  off REF (the default branch). Then opens it.
   grove open <name>              go there; the session is made if it must be
+  grove pr [--json]              the open pull requests that concern you here —
+                                 review asked of you, yours, assigned, mentioned —
+                                 and which worktree has each (asks gh)
+  grove pr <number> [--no-open]  that PR's branch in a worktree named for it
+                                 (seth/fix → seth-fix), fetched if it must be,
+                                 from the PR itself when it comes from a fork
   grove merge <name>             land the branch on the default branch and
                                  remove the worktree, its session, its branch
   grove rm <name> [--force]      remove all three without merging
@@ -250,7 +344,9 @@ usage:
 A worktree for repo R named N lives beside the repo at <parent>/R--N,
 and its session is named R--N. The place is detected: a rook pane, a
 tmux session, rook on PATH, else none (GROVE_PLACE=rook|tmux|none
-overrides). What a fresh checkout needs that git does not carry —
+overrides). Pull requests come from the gh CLI, logged in
+(https://cli.github.com); a repo without it has none to show.
+What a fresh checkout needs that git does not carry —
 copy = [".env"], link = ["node_modules"] — goes in grove.toml at the
 repo root, and in ~/.config/grove/grove.toml for every repo.
 `

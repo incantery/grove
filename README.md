@@ -18,6 +18,8 @@ grove ls                       the rows, in a pipe or for the eye
 grove new feature              a worktree on branch feature, opened
 grove new theirs --fetch       …on origin's branch, tracked, if origin has it
 grove open feature             go there; the session is made if it must be
+grove pr                       the open pull requests that concern you (gh)
+grove pr 420                   that PR's branch in a worktree, opened
 grove merge feature            land it on the default branch; remove all three
 grove rm feature [--force]     remove without merging
 grove path feature             the directory, for cd "$(grove path feature)"
@@ -30,7 +32,9 @@ answers with its true home.
 A bare `grove` in a terminal is the manager, a Bubble Tea program:
 the worktrees as rows with live state, `enter` opens, `n` names a new
 one, `m` merges it home, `d` removes it (`D` without asking about the
-branch), `r` refreshes, `q` leaves. It draws to whatever size it is
+branch), `r` refreshes, `q` leaves. Below the worktrees sit the open
+pull requests that concern you and have no checkout yet; `enter` on
+one makes the worktree and opens it. It draws to whatever size it is
 given, so a multiplexer's popup is the same program — rook's
 `prefix-w` floats it. Opening from outside a session lands you in it
 when the manager exits.
@@ -50,6 +54,20 @@ answers: the local branch `<name>` if there is one; `origin/<name>`,
 tracked, if origin has it; else a fresh branch off `--from` (the
 default branch when empty). Nothing here needs the network. `--fetch`
 asks origin first, for the branch somebody else pushed an hour ago.
+
+## Which branches
+
+The branches most worth a worktree are the ones with an open pull
+request that concerns you. `grove pr` asks GitHub, through the `gh`
+CLI you are already logged in to, for the open PRs on this repo where
+your review was asked, you are the author (pushed from another
+machine, say), you are assigned, or you were mentioned — in that
+order, newest first — and says which worktree has each. `grove pr
+420` (or the manager's `enter` on the row) puts #420's branch in a
+worktree named for it — `seth/fix-thing` becomes `seth-fix-thing` —
+fetching it if it is not here yet, from the PR itself when the head
+lives in a fork, and opens it. A repo without `gh`, or without a
+GitHub remote, simply has no pull requests to show.
 
 ## The place
 
@@ -82,7 +100,9 @@ before grove existed.
 ## For programs
 
 `grove ls --json` and `grove new --json` print the rows: name, path,
-branch, head, main, dirty, ahead, behind, session, live. The Go
+branch, head, main, dirty, ahead, behind, session, live. `grove pr
+--json` prints the pull requests: number, title, branch, base, author,
+fork, draft, url, updated, role, worktree. The Go
 package is the same thing without the process — `grove.Find`,
 `Repo.New`, `Repo.Merge`, and the `Place` interface — and it imports
 the standard library and nothing else. The command, with its UI, is a

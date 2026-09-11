@@ -5,6 +5,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -44,6 +45,19 @@ type rowsMsg struct {
 
 type tickMsg struct{}
 
+// pullsMsg is GitHub's answer: the open pull requests that concern
+// the person, or why it could not be asked.
+type pullsMsg struct {
+	pulls []grove.Pull
+	err   error
+}
+
+type pullTickMsg struct{}
+
+// pullsEvery is how often GitHub is asked again; gh is slow and rate
+// limited where git is neither.
+const pullsEvery = 90 * time.Second
+
 type doneMsg struct {
 	note string
 	err  error
@@ -56,7 +70,12 @@ type model struct {
 	repo    grove.Repo
 	conv    grove.Conventions
 	rows    []grove.Worktree
-	cursor  int
+	all     []grove.Pull   // open PRs concerning the person, as GitHub answered
+	pulls   []grove.Pull   // the ones without a worktree yet: the section below the rows
+	byPR    map[string]int // branch → PR number, for the worktree rows that have one
+	pullErr error
+	noGH    bool // gh is missing or logged out: no pull request section
+	cursor  int  // over rows then pulls, one list
 	width   int
 	height  int
 	mode    mode
@@ -85,11 +104,53 @@ func manage(repo grove.Repo, conv grove.Conventions) (attach string, err error) 
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(m.load(), tick())
+	return tea.Batch(m.load(), m.loadPulls(), tick(), pullTick())
 }
 
 func tick() tea.Cmd {
 	return tea.Tick(refreshEvery, func(time.Time) tea.Msg { return tickMsg{} })
+}
+
+func pullTick() tea.Cmd {
+	return tea.Tick(pullsEvery, func(time.Time) tea.Msg { return pullTickMsg{} })
+}
+
+// loadPulls asks GitHub off the UI thread.
+func (m model) loadPulls() tea.Cmd {
+	if m.noGH {
+		return nil
+	}
+	repo := m.repo
+	return func() tea.Msg {
+		pulls, err := repo.PullRequests()
+		return pullsMsg{pulls: pulls, err: err}
+	}
+}
+
+// entries is how many rows the cursor can be on: worktrees, then
+// pull requests.
+func (m model) entries() int { return len(m.rows) + len(m.pulls) }
+
+// currentPull is the pull request under the cursor, when it is on one.
+func (m model) currentPull() (grove.Pull, bool) {
+	i := m.cursor - len(m.rows)
+	if i < 0 || i >= len(m.pulls) {
+		return grove.Pull{}, false
+	}
+	return m.pulls[i], true
+}
+
+// relink joins the pull requests to the worktrees: the ones with a
+// checkout mark their row, the rest are the section below.
+func (m *model) relink() {
+	all, unchecked := grove.Link(m.all, m.rows)
+	m.pulls = unchecked
+	m.byPR = map[string]int{}
+	for _, p := range all {
+		if p.Worktree != "" {
+			m.byPR[p.Branch] = p.Number
+		}
+	}
 }
 
 // load re-reads the worktrees off the UI thread.
@@ -118,21 +179,61 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tick()
 		}
 		return m, tea.Batch(m.load(), tick())
+	case pullTickMsg:
+		if m.mode == modeBusy {
+			return m, pullTick()
+		}
+		return m, tea.Batch(m.loadPulls(), pullTick())
 	case rowsMsg:
 		if msg.err != nil {
 			m.err = msg.err
 			return m, nil
 		}
-		// keep the cursor on the same worktree across a reload
-		var keep string
+		// keep the cursor on the same worktree, or pull request,
+		// across a reload
+		keepPath, keepPR := "", 0
 		if cur, ok := m.current(); ok {
-			keep = cur.Path
+			keepPath = cur.Path
+		} else if p, ok := m.currentPull(); ok && len(m.rows) > 0 {
+			// (the first rows to arrive put the cursor on the first
+			// worktree, even when GitHub answered before git did)
+			keepPR = p.Number
 		}
 		m.rows = msg.rows
+		m.relink()
 		m.cursor = 0
 		for i, r := range m.rows {
-			if r.Path == keep {
+			if r.Path == keepPath {
 				m.cursor = i
+			}
+		}
+		for i, p := range m.pulls {
+			if p.Number == keepPR {
+				m.cursor = len(m.rows) + i
+			}
+		}
+		return m, nil
+	case pullsMsg:
+		if errors.Is(msg.err, grove.ErrNoGH) {
+			m.noGH, m.pullErr, m.pulls = true, nil, nil
+			return m, nil
+		}
+		m.pullErr = msg.err
+		if msg.err != nil {
+			return m, nil
+		}
+		keepPR := 0
+		if p, ok := m.currentPull(); ok {
+			keepPR = p.Number
+		}
+		m.all = msg.pulls
+		m.relink()
+		if m.cursor >= m.entries() {
+			m.cursor = max(0, m.entries()-1)
+		}
+		for i, p := range m.pulls {
+			if p.Number == keepPR {
+				m.cursor = len(m.rows) + i
 			}
 		}
 		return m, nil
@@ -167,7 +268,7 @@ func (m model) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "q", "esc", "ctrl+c":
 		return m, tea.Quit
 	case "j", "down":
-		if m.cursor < len(m.rows)-1 {
+		if m.cursor < m.entries()-1 {
 			m.cursor++
 		}
 	case "k", "up":
@@ -177,13 +278,17 @@ func (m model) updateList(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "g", "home":
 		m.cursor = 0
 	case "G", "end":
-		m.cursor = max(0, len(m.rows)-1)
+		m.cursor = max(0, m.entries()-1)
 	case "r":
-		return m, m.load()
+		return m, tea.Batch(m.load(), m.loadPulls())
 	case "enter", "o":
 		if cur, ok := m.current(); ok {
 			m.mode = modeBusy
 			return m, open(m.repo, cur)
+		}
+		if p, ok := m.currentPull(); ok {
+			m.mode = modeBusy
+			return m, checkout(m.repo, p, m.conv)
 		}
 	case "n":
 		m.mode = modeNaming
@@ -267,6 +372,17 @@ func create(repo grove.Repo, name string, conv grove.Conventions) tea.Cmd {
 	}
 }
 
+// checkout puts the pull request's branch in a worktree and opens it.
+func checkout(repo grove.Repo, p grove.Pull, conv grove.Conventions) tea.Cmd {
+	return func() tea.Msg {
+		wt, err := repo.Checkout(p, conv)
+		if err != nil {
+			return doneMsg{err: err}
+		}
+		return open(repo, wt)()
+	}
+}
+
 func merge(repo grove.Repo, wt grove.Worktree) tea.Cmd {
 	return func() tea.Msg {
 		if err := repo.Merge(wt.Name); err != nil {
@@ -320,6 +436,9 @@ func (m model) View() tea.View {
 			branch = "detached " + r.Head
 		}
 		var notes []string
+		if n := m.byPR[r.Branch]; n > 0 {
+			notes = append(notes, fmt.Sprintf("#%d", n))
+		}
 		if r.Live {
 			notes = append(notes, "live")
 		}
@@ -344,6 +463,39 @@ func (m model) View() tea.View {
 		b.WriteString(dim.Render("  (loading…)") + "\n")
 	}
 
+	// The pull requests that concern the person and have no worktree
+	// yet: the checkouts worth making, a keystroke from being made.
+	if !m.noGH && (len(m.pulls) > 0 || m.pullErr != nil) {
+		b.WriteString("\n" + dim.Render("pull requests for you") + "\n")
+		if m.pullErr != nil {
+			b.WriteString(dim.Render("  "+m.pullErr.Error()) + "\n")
+		}
+		branchW := 12
+		for _, p := range m.pulls {
+			branchW = max(branchW, len([]rune(p.Branch)))
+		}
+		branchW = min(branchW, 32)
+		now := time.Now()
+		for i, p := range m.pulls {
+			branch := p.Branch
+			if rs := []rune(branch); len(rs) > branchW {
+				branch = string(rs[:branchW-1]) + "…"
+			}
+			pad := strings.Repeat(" ", branchW-len([]rune(branch)))
+			why := p.Said()
+			if p.Draft {
+				why += " · draft"
+			}
+			head := fmt.Sprintf("#%-5d %s", p.Number, branch)
+			rest := fmt.Sprintf("%s  %-16s %-4s %s", pad, why, p.Age(now), dim.Render(p.Title))
+			if len(m.rows)+i == m.cursor {
+				b.WriteString(selected.Render("▸ "+head) + rest + "\n")
+			} else {
+				b.WriteString(dim.Render("○") + " " + head + rest + "\n")
+			}
+		}
+	}
+
 	b.WriteString("\n")
 	switch m.mode {
 	case modeNaming:
@@ -359,11 +511,16 @@ func (m model) View() tea.View {
 		b.WriteString(dim.Render("working…"))
 	default:
 		if m.err != nil {
-			b.WriteString(errStyle.Render(m.err.Error()))
+			// one line: git's multi-line advice would push the rows up
+			b.WriteString(errStyle.Render(strings.Join(strings.Fields(m.err.Error()), " ")))
 		} else if m.note != "" {
 			b.WriteString(accent.Render(m.note))
 		} else {
-			b.WriteString(dim.Render("enter open · n new · m merge home · d remove (D force) · r refresh · q quit"))
+			if _, ok := m.currentPull(); ok {
+				b.WriteString(dim.Render("enter check out and open · n new · r refresh · q quit"))
+			} else {
+				b.WriteString(dim.Render("enter open · n new · m merge home · d remove (D force) · r refresh · q quit"))
+			}
 		}
 	}
 	out := b.String()
