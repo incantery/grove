@@ -85,4 +85,6 @@ before grove existed.
 branch, head, main, dirty, ahead, behind, session, live. The Go
 package is the same thing without the process — `grove.Find`,
 `Repo.New`, `Repo.Merge`, and the `Place` interface — and it imports
-the standard library and nothing else.
+the standard library and nothing else. The command, with its UI, is a
+module of its own under `cmd/grove`, so a program that wants the
+model does not inherit a terminal.

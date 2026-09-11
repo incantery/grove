@@ -3,7 +3,7 @@
 // see this file. `go install .../cmd/grove@version` uses the pin in
 // cmd/grove/go.mod, so bump it (`go get github.com/incantery/grove@<sha>`
 // there) before tagging.
-go 1.25
+go 1.25.0
 
 use (
 	.
