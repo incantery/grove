@@ -1,0 +1,85 @@
+# GoReleaser builds the archives on a version tag, publishes a GitHub
+# Release, and updates the Homebrew cask in incantery/homebrew-tap (same
+# shape as rook, vera and usage).
+#
+# One pure-Go binary, `grove`: git worktrees with a session each, for people
+# and agents alike. The cask is
+# macOS-only because casks are; Linux users have the archive or
+# `go install github.com/incantery/grove/cmd/grove@latest`.
+#
+# Run locally with: goreleaser release --snapshot --clean
+version: 2
+
+project_name: grove
+
+before:
+  hooks:
+    - go mod tidy
+
+# Two build ids for one binary so the cask can name only the macOS
+# archives; Homebrew casks have no Linux side.
+builds:
+  - id: grove-darwin
+    main: ./cmd/grove
+    binary: grove
+    env: [CGO_ENABLED=0]
+    goos: [darwin]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w
+      - -X main.version=v{{ .Version }}
+  - id: grove-linux
+    main: ./cmd/grove
+    binary: grove
+    env: [CGO_ENABLED=0]
+    goos: [linux]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w
+      - -X main.version=v{{ .Version }}
+
+archives:
+  - id: grove-darwin
+    ids: [grove-darwin]
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+  - id: grove-linux
+    ids: [grove-linux]
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+
+homebrew_casks:
+  - name: grove
+    ids: [grove-darwin]
+    repository:
+      owner: incantery
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: "https://github.com/incantery/grove"
+    description: "One git worktree per task, and the place you work in it: rook, tmux, or none"
+    binaries:
+      - grove
+    # Ad-hoc-signed binary: strip the quarantine flag so Gatekeeper does
+    # not block first run.
+    hooks:
+      post:
+        install: |
+          if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/grove"]
+          end
+
+release:
+  github:
+    owner: incantery
+    name: grove
