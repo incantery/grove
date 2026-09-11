@@ -13,7 +13,8 @@ go install github.com/incantery/grove/cmd/grove@latest   # anywhere with Go
 ## What it is
 
 ```
-grove                          the repo's worktrees, with live state
+grove                          the manager: rows, and the lifecycle on keys
+grove ls                       the rows, in a pipe or for the eye
 grove new feature              a worktree on branch feature, opened
 grove new theirs --fetch       …on origin's branch, tracked, if origin has it
 grove open feature             go there; the session is made if it must be
@@ -25,6 +26,14 @@ grove where                    which place worktrees are worked in here
 
 Every verb works from inside any checkout of the repo: a worktree
 answers with its true home.
+
+A bare `grove` in a terminal is the manager, a Bubble Tea program:
+the worktrees as rows with live state, `enter` opens, `n` names a new
+one, `m` merges it home, `d` removes it (`D` without asking about the
+branch), `r` refreshes, `q` leaves. It draws to whatever size it is
+given, so a multiplexer's popup is the same program — rook's
+`prefix-w` floats it. Opening from outside a session lands you in it
+when the manager exits.
 
 ## The layout
 
