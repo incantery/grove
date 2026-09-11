@@ -1,6 +1,6 @@
 // Command grove: one worktree per task, and the place you work in it.
 //
-//	grove                          the repo's worktrees, with live state
+//	grove                          the manager (a TUI); the rows, in a pipe
 //	grove new <name> [--from REF] [--fetch] [--no-open]
 //	grove open <name>              go there (the session is made if it must be)
 //	grove merge <name>             land the branch on the default branch; remove all three
@@ -56,6 +56,10 @@ func run(args []string) error {
 		return err
 	}
 	if len(args) == 0 {
+		// A terminal gets the manager; a pipe gets the rows.
+		if fi, err := os.Stdout.Stat(); err == nil && fi.Mode()&os.ModeCharDevice != 0 {
+			return manageAndAttach(repo)
+		}
 		return list(repo, false)
 	}
 	verb, rest := args[0], args[1:]
@@ -164,6 +168,20 @@ func run(args []string) error {
 	return fmt.Errorf("unknown command %q\n%s", verb, usage)
 }
 
+// manageAndAttach runs the manager and, when the person opened a
+// worktree from outside a session, lands them in it.
+func manageAndAttach(repo grove.Repo) error {
+	conv := grove.UserConventions().Merge(grove.LoadConventions(repo.Root))
+	attach, err := manage(repo, conv)
+	if err != nil || attach == "" {
+		return err
+	}
+	if a, ok := repo.Place.(grove.Attacher); ok {
+		return a.Attach(attach)
+	}
+	return nil
+}
+
 func list(repo grove.Repo, asJSON bool) error {
 	wts, err := repo.List()
 	if err != nil {
@@ -213,7 +231,8 @@ func has(args []string, flag string) bool {
 const usage = `grove — one worktree per task, and the place you work in it
 
 usage:
-  grove                          the repo's worktrees, with live state
+  grove                          the manager: the worktrees as rows, the
+                                 lifecycle on keys (in a pipe: the rows)
   grove ls [--json]              the same, for programs
   grove new <name> [--from REF] [--fetch] [--no-open] [--json]
                                  a worktree on branch <name>: the local branch

@@ -1,0 +1,11 @@
+// The workspace points the command at the library beside it, so an
+// edit here is picked up without a push round-trip; consumers never
+// see this file. `go install .../cmd/grove@version` uses the pin in
+// cmd/grove/go.mod, so bump it (`go get github.com/incantery/grove@<sha>`
+// there) before tagging.
+go 1.25
+
+use (
+	.
+	./cmd/grove
+)

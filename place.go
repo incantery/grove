@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 )
 
 // Place is where a worktree is worked in: the session side of the
@@ -25,6 +26,21 @@ type Place interface {
 	Open(session, dir string) error
 	Close(session string) error
 	Live() map[string]bool
+}
+
+// InsideSession says whether this process runs inside a multiplexer's
+// session — a rook pane or a tmux client. Opening a worktree from
+// inside one switches there; from outside, there is a session to
+// attach to afterwards.
+func InsideSession() bool {
+	return os.Getenv("ROOK_MUX_PANE") != "" || os.Getenv("TMUX") != ""
+}
+
+// Attacher is a Place that can put this terminal into a session: the
+// thing to do after opening a worktree from outside one. Attach
+// replaces the process and does not return on success.
+type Attacher interface {
+	Attach(session string) error
 }
 
 // Detect picks the Place from the environment: GROVE_PLACE when set
@@ -82,6 +98,11 @@ func (r Rook) Close(session string) error {
 	return err
 }
 
+// Attach makes this terminal a rook client landing in the workspace.
+func (Rook) Attach(session string) error {
+	return become("rook", "--space", session)
+}
+
 func (Rook) Live() map[string]bool {
 	out, err := run("rook", "ls")
 	if err != nil {
@@ -120,12 +141,27 @@ func (t Tmux) Close(session string) error {
 	return err
 }
 
+// Attach makes this terminal a tmux client on the session.
+func (Tmux) Attach(session string) error {
+	return become("tmux", "attach-session", "-t", "="+session)
+}
+
 func (Tmux) Live() map[string]bool {
 	out, err := run("tmux", "list-sessions", "-F", "#S")
 	if err != nil {
 		return map[string]bool{}
 	}
 	return lines(out)
+}
+
+// become replaces this process with the program, the way a shell's
+// exec does; it returns only when that failed.
+func become(name string, args ...string) error {
+	path, err := exec.LookPath(name)
+	if err != nil {
+		return err
+	}
+	return syscall.Exec(path, append([]string{name}, args...), os.Environ())
 }
 
 // run runs a program and returns its combined output, with the
